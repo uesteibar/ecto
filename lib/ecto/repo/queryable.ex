@@ -144,7 +144,7 @@ defmodule Ecto.Repo.Queryable do
           from: from
         } = select
 
-        preprocessor = preprocessor(from, preprocess, sources, prefix, adapter)
+        preprocessor = preprocessor(from, preprocess, take, sources, prefix, adapter)
         {count, rows} = adapter.execute(repo, meta, prepared, params, opts)
         postprocessor = postprocessor(from, postprocess, take, prefix, adapter)
 
@@ -172,7 +172,7 @@ defmodule Ecto.Repo.Queryable do
           from: from
         } = select
 
-        preprocessor = preprocessor(from, preprocess, sources, prefix, adapter)
+        preprocessor = preprocessor(from, preprocess, take, sources, prefix, adapter)
         stream = adapter.stream(repo, meta, prepared, params, opts)
         postprocessor = postprocessor(from, postprocess, take, prefix, adapter)
 
@@ -184,21 +184,21 @@ defmodule Ecto.Repo.Queryable do
     end
   end
 
-  defp preprocessor({_, {:source, source_schema, fields}}, preprocess, sources, prefix, adapter) do
+  defp preprocessor({_, {:source, source_schema, fields}}, preprocess, take, sources, prefix, adapter) do
     all_nil? = tuple_size(sources) != 1
 
     fn row ->
-      {entry, rest} = process_source(source_schema, fields, row, all_nil?, prefix, adapter)
+      {entry, rest} = process_source(source_schema, fields, row, all_nil?, prefix, adapter, take)
       preprocess(rest, preprocess, entry, prefix, adapter)
     end
   end
-  defp preprocessor({_, from}, preprocess, _sources, prefix, adapter) do
+  defp preprocessor({_, from}, preprocess, _take, _sources, prefix, adapter) do
     fn row ->
       {entry, rest} = process(row, from, nil, prefix, adapter)
       preprocess(rest, preprocess, entry, prefix, adapter)
     end
   end
-  defp preprocessor(:none, preprocess, _sources, prefix, adapter) do
+  defp preprocessor(:none, preprocess, _take, _sources, prefix, adapter) do
     fn row ->
       preprocess(row, preprocess, nil, prefix, adapter)
     end
@@ -305,14 +305,16 @@ defmodule Ecto.Repo.Queryable do
     {data, row}
   end
 
-  defp process_source({source, schema}, types, row, all_nil?, prefix, adapter) do
-    case split_values(types, row, [], all_nil?) do
-      {nil, row} ->
-        {nil, row}
-      {values, row} ->
-        struct = if schema, do: schema.__struct__(), else: %{}
-        loader = &Ecto.Type.adapter_load(adapter, &1, &2)
-        {Ecto.Schema.__safe_load__(struct, types, values, prefix, source, loader), row}
+  defp process_source({source, schema}, types, row, all_nil?, prefix, adapter, take \\ []) do
+    {values, row} = split_values(types, row, [], all_nil?)
+    all_nil? = Enum.all?(values, &match?(nil, &1))
+
+    if Enum.empty?(take) && all_nil? do
+      {nil, row}
+    else
+      struct = if schema && !all_nil?, do: schema.__struct__(), else: %{}
+      loader = &Ecto.Type.adapter_load(adapter, &1, &2)
+      {Ecto.Schema.__safe_load__(struct, types, values, prefix, source, loader), row}
     end
   end
 
@@ -322,8 +324,8 @@ defmodule Ecto.Repo.Queryable do
   defp split_values([_ | types], [value | values], acc, _all_nil?) do
     split_values(types, values, [value | acc], false)
   end
-  defp split_values([], values, _acc, true) do
-    {nil, values}
+  defp split_values([], values, acc, true) do
+    {acc, values}
   end
   defp split_values([], values, acc, false) do
     {Enum.reverse(acc), values}
